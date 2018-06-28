@@ -97,7 +97,9 @@ def SFDensity(ds, center, size, height, max_age):
     patched_ages = ages[box]
     new_stars = patched_ages > 0
     new_star_ages = patched_ages[new_stars]
+    new_star_ages = ds.current_time - new_star_ages
     Myr_ages = new_star_ages.in_units('Myr')
+
     young = Myr_ages < max_age
     stars = Myr_ages[young]
     #Get masses of new stars
@@ -107,7 +109,7 @@ def SFDensity(ds, center, size, height, max_age):
     #Find total mass of new stars, then surface density
     patched_stars = np.sum(young_star_mass)
     sfrDen = patched_stars/((size**2)*max_age)
-    
+    sfrDen = sfrDen.in_units('Msun/yr/kpc**2')
     return sfrDen
 
 
@@ -132,11 +134,78 @@ def sigmaCalc(ds, step, age, spatial_range):
             sfrd.append(SF) #Add to arrays
             gd.append(G) #Add to arrays
     
-    sfsd = np.asarray(sfrd)
-    gsd = np.asarray(gd)
-    np.savetxt(sfFile, sfsd)
-    np.savetxt(gFile, gsd)
+            sfsd = np.asarray(sfrd)
+            gsd = np.asarray(gd)
+            np.savetxt(sfFile, sfsd)
+            np.savetxt(gFile, gsd)
+
     return sfsd, gsd
 
 
 
+def expectedSFR_calculator(ds, x, y, size, height):
+    ad = ds.all_data()
+    #Create patch of cells
+    box = cell_patch(ds, x, y, size, height)
+    #Make inputs into YT Quantites
+    size = yt.YTQuantity(size, 'pc')
+    height = yt.YTQuantity(height, 'pc')
+    #Find cells in patch
+    cell_sfr = ad['expectedSFR'].in_units('Msun/yr/kpc**3')
+    patch_cells = cell_sfr[box]
+    v_cells = ad['cell_volume']
+    v_cells_patched = v_cells[box]
+        #Create Temperature Cut
+#    cell_temp = ad['temperature'].in_units('K')
+#    cell_temp_patch = cell_temp[box]
+#    cold_gas = cell_temp_patch < 10**4
+    #Add up mass of cells in patch under temp cut
+#    cold_gas_mass = patch_cells[cold_gas]
+    cell_sfr = patch_cells*v_cells_patched
+    total_sfr = np.sum(cell_sfr)
+    density = (total_sfr/size**2).in_units('Msun/yr/kpc**2')
+    return density
+
+def expSFRSD(ds, step, spatial_range):
+    #Give in output file names
+    expsfFile = input('Enter expected SFR file name: ')
+#    gFile = input('Enter GSD file name: ')
+    #Read in limits 
+    low, high = spatial_range
+    #Create empty lists to hold gas SD and SFR SD values
+
+    sfrd = []
+#   gd = []
+    for x in np.arange(low, high, step): #find x of center for each patch
+        for y in np.arange(low, high, step): #find y of center
+            print('x: ', x)
+            print('y: ', y)
+            SF = expectedSFR_calculator(ds, x, y, 100, 500) #Find SFRSD
+#            G = GasDensity(ds, x, y, 100, 500) #Find GasSD
+            print('SFRSD: ', SF)
+#            print('GSD: ', G)
+            sfrd.append(SF) #Add to arrays
+#            gd.append(G)
+    
+    sfsd = np.asarray(sfrd)
+#    gsd = np.asarray(gd)
+    np.savetxt(expsfFile, sfsd)
+#    np.savetxt(gFile, gsd)
+    return sfsd
+
+
+def sigmaPlotter(g, sfr, esf, age_in_yr, size_in_kpc):
+
+    upper_limit = np.zeros(len(sfr))
+    for i in range(len(sfr)):
+        if sfr[i] == 0:
+            upper_limit[i] = 50./age_in_yr/(size_in_kpc**2)
+            
+    plt.loglog(g, sfr, 's', color = 'r', label = 'Simulation')
+    plt.loglog(g, esf, 'o', label = 'Analytic')
+    plt.loglog(g, upper_limit, 'v')
+    plt.ylabel('$\dot{\Sigma}_{SF}$ ($M_\odot  kpc^{-2} yr^{-1}$)')
+    plt.xlabel('$\Sigma (M_\odot  pc^{-2})$')
+    
+    plt.legend(loc = 'upper left')
+    plt.show()
