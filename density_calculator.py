@@ -1,7 +1,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import yt
-
+import scipy.optimize as opt
 
 def cell_patch(data, cent, size, height):
 
@@ -74,7 +74,7 @@ def particle_patch(data, center, size, height):
 
 """
 
-def GasDensity(ds, center, size, height):
+def GasDensity(ds, center, size, height, temp):
 
     x,y,z = center
 
@@ -82,8 +82,8 @@ def GasDensity(ds, center, size, height):
     box = cell_patch(ds, center, size, height)
 
     #Make inputs into YT Quantites
-    #size = yt.YTQuantity(size, 'pc')
-    #height = yt.YTQuantity(height, 'pc')
+    size = yt.YTQuantity(size, 'pc')
+    height = yt.YTQuantity(height, 'pc')
 
     #Find cells in patch
     mass = box['cell_mass'].in_units('Msun')
@@ -92,12 +92,21 @@ def GasDensity(ds, center, size, height):
     #Create Temperature Cut
     cell_temp = box['temperature'].in_units('K')
 #    cell_temp_patch = cell_temp[box]
-    cold_gas = cell_temp < 10**4
+    if temp == 'cold':
+        cold_gas = cell_temp < 10**4
 
-    #Add up mass of cells in patch under temp cut
-    cold_gas_mass = mass[cold_gas]
-    total_mass = np.sum(cold_gas_mass)
+        #Add up mass of cells in patch under temp cut
+        cold_gas_mass = mass[cold_gas]
+        total_mass = np.sum(cold_gas_mass)
 
+    elif temp == 'warm':
+        warm_gas = cell_temp > 10**4
+        warm_gas_mass = mass[warm_gas]
+        total_mass = np.sum(warm_gas_mass)
+    elif temp == 'all':
+        total_mass = np.sum(mass)
+    
+    print(total_mass, size**2)
     #Calculate density (Divide by area)
     density = total_mass/(size**2)
     return density
@@ -227,14 +236,17 @@ def sigmaPlotter(g, sfr, esf, age_in_Myr, size_in_kpc, limit):
     
     age_in_yr = age_in_Myr*(10**6)
     upper_limit = np.zeros(len(sfr))
-    if limit == True:
-        for i in range(len(sfr)):
-            if sfr[i] == 0:
-                upper_limit[i] = 50./age_in_yr/(size_in_kpc**2)
-            
+    for i in range(len(sfr)):
+        if sfr[i] == 0:
+            upper_limit[i] = 50./age_in_yr/(size_in_kpc**2)
+
+
+    plt.loglog(g, esf, 'o', label = 'Analytic', color = 'b')            
     plt.loglog(g, sfr, 's', color = 'r', label = '{age_in_Myr} Myr'.format(age_in_Myr=age_in_Myr))
-    plt.loglog(g, upper_limit, 'v', color = 'r')
-    plt.loglog(g, esf, 'o', label = 'Analytic', color = 'b')
+
+    if limit == True:
+        plt.loglog(g, upper_limit, 'v', color = 'r')
+
 
     plt.ylabel('$\dot{\Sigma}_{SF}$ ($M_\odot  kpc^{-2} yr^{-1}$)')
     plt.xlabel('$\Sigma (M_\odot  pc^{-2})$')
@@ -249,3 +261,75 @@ def sigmaPlotter(g, sfr, esf, age_in_Myr, size_in_kpc, limit):
 
 
     plt.show()
+
+
+#define constants                                                                                                                                                                                                                                                                          
+G = yt.YTQuantity(6.67259e-8, 'cm**3/g/s**2')
+cw = yt.YTQuantity(8.0e5, 'cm/s')
+fw = 0.5
+zd = 0.33
+tCNM = yt.YTQuantity(243., 'K')
+Eff = 0.01
+SigmaSF_0 = yt.YTQuantity(2.5e-3, 'Msun/Myr/pc**2')
+fc = 1.
+kB = yt.YTQuantity(1.380658e-16, 'erg/K')
+alpha = 5.
+
+def Krumholz_model(ds, center, size, height):
+    #Define Patch                                                                                                                                                                                                                                                                          
+    box = cell_patch(ds, center, size, height)
+
+    #Get values from simulation                                                                                                                                                                                                                                                            
+    SigmaG = GasDensity(ds, center, size, height, temp = 'all')
+    SigmaG_0 = (SigmaG/yt.YTQuantity(1., 'Msun/pc**2')).in_units('')
+    Z = 0.1
+    G0_guess = yt.YTQuantity(10**-4, 'Msun/yr/kpc**2')/SigmaSF_0
+    rhoSD = np.sum(box['particle_mass'])/((size**2)*(2*height))
+
+
+    def nonlinear_fH2(fH2, G0):
+
+        Sigma_H2 = (fH2*SigmaG).in_units('Msun/pc**2')
+        Sigma_HI = ((1-fH2)*SigmaG).in_units('Msun/pc**2')
+        RH2 = Sigma_H2/Sigma_HI
+
+        #Plug values into system of equations                                                                                                                                                                                                                                              
+        nCNM_min = 31*G0*(1+3.1*(Z)**0.365)**-1
+
+        nCNM_2p = yt.YTQuantity(23*G0*((1+3.1*Z**0.365)/4.1)**-1, 'cm**-3')
+
+        Pth = ((np.pi*G*Sigma_HI**2)/(4.*alpha))*(1.+2*RH2+np.sqrt((1.+2*RH2)**2+(32*zd*alpha*fw*rhoSD*cw**2)/(np.pi*G*Sigma_HI**2)))
+        print(Pth)
+        nCNM_hydro = Pth/(1.1*kB*tCNM)
+
+        nCNM = max([nCNM_hydro.in_units('cm**-3'), nCNM_2p.in_units('cm**-3')])
+
+        n1 = nCNM/yt.YQuantity(10., 'cm**-3')
+
+        Chi = (7.2*G0/n1).in_units('')
+
+        Tc = (0.066*fc*Z*SigmaG_0).in_units('')
+
+        S = np.log(1 + 0.6*Chi + 0.01*Chi**2)/(0.6*Tc)
+
+        if S < 2.:
+            fH2_inferred = 1 - (3/4)*S/(1+0.25*S)
+        else:
+            fH2_inferred = 0
+
+        return fH2 - fH2_inferred
+
+
+
+    def nonlinear_G0(G0):
+        fH2_found = opt.brentq(nonlinear_fH2, 0, 1, args = (G0))
+
+        tff = yt.YTQuantity(31*SigmaG_0**(-1/4), 'Myr')
+
+        SigmaSF = fH2*Eff*SigmaG/tff
+
+        return SigmaSF/SigmaSF_0 - G0
+
+    G0_found = opt.brentq(nonlinear_G0, 10**-5, 100)
+
+    return G0_found * SigmaSF_0
