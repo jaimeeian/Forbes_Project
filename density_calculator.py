@@ -264,15 +264,15 @@ def sigmaPlotter(g, sfr, esf, age_in_Myr, size_in_kpc, limit):
 
 
 #define constants                                                                                                                                                                                                                                                                          
-G = yt.YTQuantity(6.67259e-8, 'cm**3/g/s**2')
+G = yt.YTQuantity(6.67259e-8, 'cm**3/(g*s**2)')
 cw = yt.YTQuantity(8.0e5, 'cm/s')
 fw = 0.5
 zd = 0.33
-tCNM = yt.YTQuantity(243., 'K')
+tCNM = yt.YTQuantity(243., 'K').in_cgs()
 Eff = 0.01
-SigmaSF_0 = yt.YTQuantity(2.5e-3, 'Msun/Myr/pc**2')
+SigmaSF_0 = yt.YTQuantity(2.5e-3, 'Msun/(Myr*pc**2)').in_cgs()
 fc = 1.
-kB = yt.YTQuantity(1.380658e-16, 'erg/K')
+kB = yt.YTQuantity(1.380658e-16, 'erg/K').in_cgs()
 alpha = 5.
 
 def Krumholz_model(ds, center, size, height):
@@ -281,30 +281,34 @@ def Krumholz_model(ds, center, size, height):
 
     #Get values from simulation                                                                                                                                                                                                                                                            
     SigmaG = GasDensity(ds, center, size, height, temp = 'all')
+    print('SigmaG: ', SigmaG)
+    size = yt.YTQuantity(size, 'pc').in_cgs()
+    height = yt.YTQuantity(height, 'pc').in_cgs()
     SigmaG_0 = (SigmaG/yt.YTQuantity(1., 'Msun/pc**2')).in_units('')
     Z = 0.1
-    G0_guess = yt.YTQuantity(10**-4, 'Msun/yr/kpc**2')/SigmaSF_0
-    rhoSD = np.sum(box['particle_mass'])/((size**2)*(2*height))
+    G0_guess = (yt.YTQuantity(10**-4, 'Msun/(yr*kpc**2)')/SigmaSF_0).in_units('')
+    rhoSD = (np.sum(box['particle_mass'].in_units('g'))/((size**2)*(2*height))).in_cgs()
 
 
     def nonlinear_fH2(fH2, G0):
 
-        Sigma_H2 = (fH2*SigmaG).in_units('Msun/pc**2')
-        Sigma_HI = ((1-fH2)*SigmaG).in_units('Msun/pc**2')
+        Sigma_H2 = (fH2*SigmaG).in_units('Msun/pc**2').in_cgs()
+        Sigma_HI = ((1-fH2)*SigmaG).in_units('Msun/pc**2').in_cgs()
         RH2 = Sigma_H2/Sigma_HI
+
 
         #Plug values into system of equations                                                                                                                                                                                                                                              
         nCNM_min = 31*G0*(1+3.1*(Z)**0.365)**-1
 
         nCNM_2p = yt.YTQuantity(23*G0*((1+3.1*Z**0.365)/4.1)**-1, 'cm**-3')
 
-        Pth = ((np.pi*G*Sigma_HI**2)/(4.*alpha))*(1.+2*RH2+np.sqrt((1.+2*RH2)**2+(32*zd*alpha*fw*rhoSD*cw**2)/(np.pi*G*Sigma_HI**2)))
-        print(Pth)
+        Pth = ((np.pi*G*Sigma_HI**2)/(4.*alpha))*(1+2*RH2+np.sqrt(((1+2*RH2)**2)+(32*zd*alpha*fw*rhoSD*cw**2)/(np.pi*G*Sigma_HI**2)))
+
         nCNM_hydro = Pth/(1.1*kB*tCNM)
 
         nCNM = max([nCNM_hydro.in_units('cm**-3'), nCNM_2p.in_units('cm**-3')])
 
-        n1 = nCNM/yt.YQuantity(10., 'cm**-3')
+        n1 = nCNM/yt.YTQuantity(10., 'cm**-3')
 
         Chi = (7.2*G0/n1).in_units('')
 
@@ -326,10 +330,49 @@ def Krumholz_model(ds, center, size, height):
 
         tff = yt.YTQuantity(31*SigmaG_0**(-1/4), 'Myr')
 
-        SigmaSF = fH2*Eff*SigmaG/tff
+        SigmaSF = fH2_found*Eff*SigmaG/tff
 
         return SigmaSF/SigmaSF_0 - G0
 
-    G0_found = opt.brentq(nonlinear_G0, 10**-5, 100)
+    a = 100
+    try:
+        G0_found = opt.brentq(nonlinear_G0, 10**-5, a)
+    except:
+        G0_found = 0.
 
-    return G0_found * SigmaSF_0
+
+
+
+    
+
+    return (G0_found * SigmaSF_0).in_units('Msun/yr/kpc**2')
+
+
+def Krumholz_data(ds, step, size, height, low, high):
+    #Give in output file names
+    KFile = input('Enter file name: ')
+
+    #Read in limits 
+    low_x, low_y, low_z = low
+    high_x, high_y, high_z = high
+    #Create empty lists to hold gas SD and SFR SD values
+
+    KSD = []
+
+    for x in np.arange(low_x, high_x, step): #find x of center for each patch
+        for y in np.arange(low_y, high_y, step): #find y of center
+            for z in np.arange(low_z, high_z, step):
+                print('x: ', x)
+                print('y: ', y)
+                SF = Krumholz_model(ds, (x, y, z), size, height) #Find SFRSD
+
+                print('SFRSD: ', SF)
+
+                KSD.append(SF) #Add to arrays
+
+    
+    Ksd = np.asarray(KSD)
+
+    np.savetxt(KFile, Ksd)
+
+    return Ksd
