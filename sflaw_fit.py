@@ -1,7 +1,15 @@
+import math
 import numpy as np
 import matplotlib.pyplot as plt
 import emcee
 import os
+import yt
+from sfr_calculator import formed_star
+from density_calculator_new import *
+
+
+add_particle_filter("formed_star", function=formed_star, filtered_type='all',
+                    requires=["creation_time"])
 
 def complete_example():
     ''' In this example we'll generate a bunch of fake datasets, then fit them and plot the results'''
@@ -17,8 +25,8 @@ def complete_example():
     fig,ax = plt.subplots(nrows=2, ncols=2)
     for i in range(to_test):
         # read in datasets in directory.....
-        x = np.loadtxt('GSD_step500_cutoff250')
-        y = np.loadtxt('SFR_step500_cutoff250')
+        x = np.loadtxt('GSD/GSD_step500_cutoff250')
+        y = np.loadtxt('SFR/SFR_step500_cutoff250')
 
         # ... fit the dataset ..
         # chain is a set of samples from the posterior distribution
@@ -27,31 +35,33 @@ def complete_example():
         mInterval, bInterval, sigmasqInterval = get_intervals(chain)
         # we can also plot a full set of diagnostics for each fit, which can be found in various files examples_*.pdf once the code is run
         # it's a good idea to plot these things, but it's not an absolute necessity.
-        diagnostics(x,y,chain,upper_limit_value=ul, mTrue=trueMs[i], bTrue=truebs[i], sigmasqTrue=truesigmasqs[i], fn='examples_'+str(i))
+        diagnostics(x,y,chain,upper_limit_value=ul, mTrue=trueMs[i], bTrue=truebs[i], sigmasqTrue=truesigmasqs[i], fn=x[4:]+str(i))
 
         # and plot the resulting best fit values and their uncertainties
         # here we make use of a function defined in this code, plotErrorbar, which plots a point and its asymmetric errorbars in both directions given the 68% credible intervals mentioned above.
         plotErrorbar( mInterval, bInterval, ax[0,0], c=colors[i] ) 
         plotErrorbar( mInterval, sigmasqInterval, ax[1,0], c=colors[i] )
         plotErrorbar( bInterval, sigmasqInterval, ax[1,1], c=colors[i] )
+        
+        del chain
+        
+        # since we know the real values of m, b, and sigma in this case, plot those too
+        ax[0,0].scatter(trueMs, truebs, c=colors) 
+        ax[1,0].scatter(trueMs, truesigmasqs, c=colors) 
+        ax[1,1].scatter(truebs, truesigmasqs, c=colors) 
 
-    # since we know the real values of m, b, and sigma in this case, plot those too
-    ax[0,0].scatter(trueMs, truebs, c=colors) 
-    ax[1,0].scatter(trueMs, truesigmasqs, c=colors) 
-    ax[1,1].scatter(truebs, truesigmasqs, c=colors) 
+        # finish up labelling the plot.
+        ax[0,0].set_xlabel('m')
+        ax[1,0].set_xlabel('m')
+        ax[1,1].set_xlabel('b')
 
-    # finish up labelling the plot.
-    ax[0,0].set_xlabel('m')
-    ax[1,0].set_xlabel('m')
-    ax[1,1].set_xlabel('b')
-
-    ax[0,0].set_ylabel('b')
-    ax[1,0].set_ylabel(r'$\sigma^2$')
-    ax[1,1].set_ylabel(r'$\sigma^2$')
-    fig.delaxes(ax[0,1])
-    plt.tight_layout()
-    plt.savefig('example.pdf')
-    plt.close(fig)
+        ax[0,0].set_ylabel('b')
+        ax[1,0].set_ylabel(r'$\sigma^2$')
+        ax[1,1].set_ylabel(r'$\sigma^2$')
+        fig.delaxes(ax[0,1])
+        plt.tight_layout()
+        plt.savefig(x[4:]+'.pdf')
+        plt.close(fig)
 
 
 def test():
@@ -59,20 +69,19 @@ def test():
     m,b,sigma = 1.9, -7.0, 0.3 # true values of the model parameters
     #x,y = generate_test_data(m=m, b=b, sigma=sigma, ul=ul) # generate some fake data
     
-    GSD_list = os.listdir('GSD')
-    SFR_list = os.listdir('SFR')
+    GSD_list = input('Enter GSD directory: ')
+    SFR_list = input('Enter SFR directory: ')
 
-    for GSD_file in GSD_list:
-        for SFR_file in SFR_list:
-            if GSD_file[3:] == SFR_file[3:] or GSD_file[3:] == SFR_file[5:]:
-                GSD = np.loadtxt('GSD/'+GSD_file)
-                SFR = np.loadtxt('SFR/'+SFR_file)
-                if np.shape(GSD) != (0,):
-                    chain = fit_sim(GSD,SFR,upper_limit_value=ul) # fit to the model
+    for GSD_file in os.listdir(GSD_list):
+        for SFR_file in os.listdir(SFR_list):
+            GSD = np.loadtxt(GSD_list+'/'+GSD_file)
+            SFR = np.loadtxt(SFR_list+'/'+SFR_file)
+            if np.shape(GSD) != (0,):
+                chain = fit_sim(GSD,SFR,upper_limit_value=ul) # fit to the model
 
-                    # make some plots to see how well we recover the true answer.
-                    # The plots are saved as testfit_*pdf
-                    diagnostics(GSD,SFR,chain, upper_limit_value=ul, mTrue=m, bTrue=b, sigmasqTrue=sigma*sigma, fn=GSD_file[4:])
+                # make some plots to see how well we recover the true answer.
+                # The plots are saved as testfit_*pdf
+                diagnostics(GSD,SFR,chain, upper_limit_value=ul, mTrue=m, bTrue=b, sigmasqTrue=sigma*sigma, fn=GSD_file[4:]+'iter20000')
 
 
 
@@ -196,7 +205,7 @@ def diagnostics(x,y,chain,upper_limit_value=None, mTrue=None, bTrue=None, sigmas
     
 
 
-def fit_sim(x, y, upper_limit_value = None, niter=10000, nwalkers=300):
+def fit_sim(x, y, upper_limit_value = None, niter=20000, nwalkers=300):
     ''' Fit x vs y data. The function expects x and y to be the same length and positive 
         i.e. don't take the logarithm of the data before passing it to this function.
         The function operates by assuming that the data points to be fit are of the form
@@ -301,8 +310,33 @@ def fit_mle(x, y, upper_limit_value = None):
 
     return m,b,sigmasq, residuals
 
-
+"""
 if __name__=='__main__':
     test() # run the test problem.
-    #complete_example()
+    complete_example()
+"""
+
+def slope_v_time(x,y, upper_limit_value = None):
+    Ms = []
+    counter = 0
+    for i in y:
+        counter +=1
+        print(counter)
+        if math.isnan(i[0]):
+            i = np.zeros(np.shape(i))
+            try:
+                m,b,sigmasq, residuals = fit_mle(x, i, upper_limit_value=None)
+                Ms.append(m)
+            except:
+                pass
+        else:
+            try:
+                m,b,sigmasq, residuals = fit_mle(x, i, upper_limit_value=None)
+                Ms.append(m)
+            except:
+                pass
+
+    Ms = np.asarray(Ms)
+    time = np.arange(0, len(Ms))
+    plt.scatter(time, Ms)
 
