@@ -1,15 +1,10 @@
-import math
 import numpy as np
 import matplotlib.pyplot as plt
 import emcee
-import os
+import math
+from glob import glob
+import pickle
 import yt
-from sfr_calculator import formed_star
-from density_calculator_new import *
-
-
-add_particle_filter("formed_star", function=formed_star, filtered_type='all',
-                    requires=["creation_time"])
 
 def complete_example():
     ''' In this example we'll generate a bunch of fake datasets, then fit them and plot the results'''
@@ -24,9 +19,9 @@ def complete_example():
 
     fig,ax = plt.subplots(nrows=2, ncols=2)
     for i in range(to_test):
-        # read in datasets in directory.....
-        x = np.loadtxt('GSD/GSD_step500_cutoff250')
-        y = np.loadtxt('SFR/SFR_step500_cutoff250')
+        # for each set of parameters, generate a dataset...
+        x = np.loadtxt('GSD_local/GSD_step500_cutoff250')
+        y = np.loadtxt('SFR_local/SFR_step500_cutoff250')
 
         # ... fit the dataset ..
         # chain is a set of samples from the posterior distribution
@@ -35,16 +30,14 @@ def complete_example():
         mInterval, bInterval, sigmasqInterval = get_intervals(chain)
         # we can also plot a full set of diagnostics for each fit, which can be found in various files examples_*.pdf once the code is run
         # it's a good idea to plot these things, but it's not an absolute necessity.
-        diagnostics(x,y,chain,upper_limit_value=ul, mTrue=trueMs[i], bTrue=truebs[i], sigmasqTrue=truesigmasqs[i], fn=x[4:]+str(i))
+        diagnostics(x,y,chain,upper_limit_value=ul, mTrue=trueMs[i], bTrue=truebs[i], sigmasqTrue=truesigmasqs[i], fn='step55_cutoff250'+str(i))
 
         # and plot the resulting best fit values and their uncertainties
         # here we make use of a function defined in this code, plotErrorbar, which plots a point and its asymmetric errorbars in both directions given the 68% credible intervals mentioned above.
         plotErrorbar( mInterval, bInterval, ax[0,0], c=colors[i] ) 
         plotErrorbar( mInterval, sigmasqInterval, ax[1,0], c=colors[i] )
         plotErrorbar( bInterval, sigmasqInterval, ax[1,1], c=colors[i] )
-        
-        del chain
-        
+
         # since we know the real values of m, b, and sigma in this case, plot those too
         ax[0,0].scatter(trueMs, truebs, c=colors) 
         ax[1,0].scatter(trueMs, truesigmasqs, c=colors) 
@@ -60,28 +53,20 @@ def complete_example():
         ax[1,1].set_ylabel(r'$\sigma^2$')
         fig.delaxes(ax[0,1])
         plt.tight_layout()
-        plt.savefig(x[4:]+'.pdf')
+        plt.savefig('step500_cutoff250.pdf')
         plt.close(fig)
 
 
 def test():
     ul = 4.0e-7 # upper limit
     m,b,sigma = 1.9, -7.0, 0.3 # true values of the model parameters
-    #x,y = generate_test_data(m=m, b=b, sigma=sigma, ul=ul) # generate some fake data
-    
-    GSD_list = input('Enter GSD directory: ')
-    SFR_list = input('Enter SFR directory: ')
+    x,y = generate_test_data(m=m, b=b, sigma=sigma, ul=ul) # generate some fake data
 
-    for GSD_file in os.listdir(GSD_list):
-        for SFR_file in os.listdir(SFR_list):
-            GSD = np.loadtxt(GSD_list+'/'+GSD_file)
-            SFR = np.loadtxt(SFR_list+'/'+SFR_file)
-            if np.shape(GSD) != (0,):
-                chain = fit_sim(GSD,SFR,upper_limit_value=ul) # fit to the model
+    chain = fit_sim(x,y,upper_limit_value=ul) # fit to the model
 
-                # make some plots to see how well we recover the true answer.
-                # The plots are saved as testfit_*pdf
-                diagnostics(GSD,SFR,chain, upper_limit_value=ul, mTrue=m, bTrue=b, sigmasqTrue=sigma*sigma, fn=GSD_file[4:]+'iter20000')
+    # make some plots to see how well we recover the true answer.
+    # The plots are saved as testfit_*pdf
+    diagnostics(x,y,chain, upper_limit_value=ul, mTrue=m, bTrue=b, sigmasqTrue=sigma*sigma, fn='testfit')
 
 
 
@@ -195,14 +180,12 @@ def diagnostics(x,y,chain,upper_limit_value=None, mTrue=None, bTrue=None, sigmas
 
 
     burnIn = niter/2 # an initial guess - may require some adjustment based on inspecting the traceplot.
-
-
     import corner
-    fig = corner.corner( chain[:, int(burnIn)::5, int(N):].reshape((-1,3)), labels=[r'm',r'b',r'$\sigma^2$'], truths = [mTrue,bTrue,sigmasqTrue])
+    fig = corner.corner( chain[:, int(burnIn)::5, N:].reshape((-1,3)), labels=[r'm',r'b',r'$\sigma^2$'], truths = [mTrue,bTrue,sigmasqTrue])
     fig.savefig(fn+'_corner.pdf')
     plt.close(fig)
 
-    
+
 
 
 def fit_sim(x, y, upper_limit_value = None, niter=20000, nwalkers=300):
@@ -312,31 +295,174 @@ def fit_mle(x, y, upper_limit_value = None):
 
 """
 if __name__=='__main__':
-    test() # run the test problem.
+    #test() # run the test problem.
     complete_example()
 """
 
-def slope_v_time(x,y, upper_limit_value = None):
-    Ms = []
-    counter = 0
-    for i in y:
-        counter +=1
-        print(counter)
-        if math.isnan(i[0]):
-            i = np.zeros(np.shape(i))
-            try:
-                m,b,sigmasq, residuals = fit_mle(x, i, upper_limit_value=None)
-                Ms.append(m)
-            except:
-                pass
+
+def chain_compiler(jump=1, start_point=0, upper_limit=None, niter=20000, gFile='GSD_massadj_noage.txt', sfDir='SFR_massadj_noage'):
+
+    GSD= np.loadtxt(gFile)
+    fnames = glob(sfDir+'/*')
+    fnames.sort()
+    SFR_list = np.asarray([np.loadtxt(f) for f in fnames])
+
+
+    print('SFR_list: ', SFR_list)
+    for i in np.arange(start_point, len(SFR_list)+jump, jump):
+        SFR = SFR_list[i]
+        print('SFR: ', SFR)
+        chain = fit_sim(GSD, SFR, upper_limit_value = upper_limit, niter=niter)
+        print(chain)
+        ind = fnames[i][-7:-4]
+        print('ind: ', ind)
+        cshape = chain.shape
+        mInterval, bInterval, sigmaInterval = get_intervals(chain)
+
+
+        diagnostics(GSD, SFR, chain, upper_limit_value=upper_limit, fn='diagonostics_massadj_{ind}'.format(ind=ind))
+        pickle.dump((mInterval, bInterval, sigmaInterval), open('intervals_massadj_{ind}.p'.format(ind=ind), 'wb'))
+
+
+        del chain
+
+        del mInterval, bInterval, sigmaInterval
+
+
+def slope_v_time(directory='intervals', fn='m_v_time.pdf'):
+    fnames = glob(directory+'/*')
+    fnames.sort()
+    fig,ax = plt.subplots()
+    time = np.array([np.arange(10, 350, 10)]).T
+    timeInterval = np.zeros((len(time), 3))
+    for i in np.arange(0, len(time)):
+        timeInterval[i] = time[i]
+
+
+    for k,f in enumerate(fnames):
+        ind = f[-5:-2]
+        intervals = pickle.load(open(f, 'rb'))
+        mInterval, bInterval, sigmaInterval = intervals
+
+
+        print('mInterval: ', mInterval)
+
+        t = np.zeros(3)+int(ind)
+
+        #plotErrorbar(timeInterval[k], mInterval, ax)
+        plotErrorbar(t, mInterval, ax)
+
+
+        del mInterval, bInterval, sigmaInterval
+
+        
+    plt.xlabel('time')
+    plt.ylabel('slope')
+    #plt.ylim((0, 6))
+    plt.savefig(fn)
+
+
+def slope_v_radius(directory='intervals_r', fn='m_v_r.pdf'):
+
+    fnames = glob(directory+'/*')
+    fnames.sort()
+    fig,ax = plt.subplots()
+
+
+
+    for k,f in enumerate(fnames):
+        ind = f[-6:-2]
+        intervals = pickle.load(open(f, 'rb'))
+        mInterval, bInterval, sigmaInterval = intervals
+
+
+        print('mInterval: ', mInterval)
+
+        t = np.zeros(3)+int(ind)
+
+        #plotErrorbar(timeInterval[k], mInterval, ax)                                                                                        
+        plotErrorbar(t, mInterval, ax)
+
+
+        del mInterval, bInterval, sigmaInterval
+
+
+    plt.xlabel('r')
+    plt.ylabel('slope')
+    #plt.ylim((0, 6))                                                                                                                        
+    plt.savefig(fn)
+
+    
+    
+    
+def radial_values(jump=1, start_point=0, upper_limit=None, niter=20000, gFile='GSD_massadj_noage.txt', sfFile='SFR_massadj_noage/SFR_massadj_noage.txt'):
+
+    GSD= np.loadtxt(gFile)
+    SFR = np.loadtxt(sfFile)
+    coords = np.loadtxt('coordinates.txt')
+    radii = []
+    for i in coords:
+        x, y, z = i
+        r = np.sqrt((x**2)+(y**2)+(z**2))
+        radii.append(r)
+
+    rad = []
+    for r in radii:
+        if r not in rad:
+            rad.append(r)
+            
+    for r in rad:
+        inds = np.where(radii<=r)[0]
+        print(r, inds)
+        ind = int(r)
+        gsd_r = GSD[inds]
+        sfr_r = SFR[inds]
+        print('gsd: ', gsd_r)
+        print('sfr: ', sfr_r)
+        print(gsd_r.shape, sfr_r.shape, gsd_r.shape==sfr_r.shape)
+        np.savetxt('GSD_radii_inclusive/GSD_r_inclusive_{0:04d}.txt'.format(ind), gsd_r)
+        np.savetxt('SFR_radii_inclusive/SFR_r_inclusive_{0:04d}.txt'.format(ind), sfr_r)
+        
+
+
+def chain_compiler_r(jump=1, start_point=0, upper_limit=None, niter=20000, gDir='GSD_radii', sfDir='SFR_radii'):
+    gNames = glob(gDir+'/*')
+    gNames.sort()
+    sfNames = glob(sfDir+'/*')
+    sfNames.sort()
+    print(gNames)
+    print(sfNames)
+
+    for i in np.arange(start_point, len(gNames)+jump, jump):
+        GSD = np.loadtxt(gNames[i])
+        SFR = np.loadtxt(sfNames[i])
+        if GSD.size==1:
+            GSD = np.asarray([GSD.tolist()])
+            SFR = np.asarray([SFR.tolist()])
         else:
-            try:
-                m,b,sigmasq, residuals = fit_mle(x, i, upper_limit_value=None)
-                Ms.append(m)
-            except:
-                pass
+            pass
 
-    Ms = np.asarray(Ms)
-    time = np.arange(0, len(Ms))
-    plt.scatter(time, Ms)
 
+        print('GSD: ', GSD)
+        print('SFR: ', SFR)
+        print(GSD.size)
+        print(type(GSD))
+
+        chain = fit_sim(GSD, SFR, upper_limit_value = upper_limit, niter=niter)
+        print(chain)
+        ind = gNames[i][-8:-4]
+        print('ind: ', ind)
+        cshape = chain.shape
+        mInterval, bInterval, sigmaInterval = get_intervals(chain)
+
+
+        diagnostics(GSD, SFR, chain, upper_limit_value=upper_limit, fn='diagonostics_radial_inclusive_{ind}'.format(ind=ind))
+        pickle.dump((mInterval, bInterval, sigmaInterval), open('intervals_radial_inclusive_{ind}.p'.format(ind=ind), 'wb'))
+
+
+        del chain
+
+        del mInterval, bInterval, sigmaInterval
+
+
+        
